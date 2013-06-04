@@ -129,6 +129,7 @@ void x264_param_default( x264_param_t *param )
     param->p_log_private = NULL;
     param->i_log_level = X264_LOG_INFO;
     param->i_log_file_level = X264_LOG_INFO;
+    param->b_show_param2 = 0;
 
     /* */
     param->analyse.intra = X264_ANALYSE_I4x4 | X264_ANALYSE_I8x8;
@@ -1457,7 +1458,7 @@ char *x264_param2string( x264_param_t *p, int b_res )
     if( p->rc.i_rc_method == X264_RC_ABR || p->rc.i_rc_method == X264_RC_CRF )
     {
         if( p->rc.i_rc_method == X264_RC_CRF )
-            s += sprintf( s, " crf=%.1f", p->rc.f_rf_constant );
+            s += sprintf( s, " crf=%.4f", p->rc.f_rf_constant );
         else
             s += sprintf( s, " bitrate=%d ratetol=%.1f",
                           p->rc.i_bitrate, p->rc.f_rate_tolerance );

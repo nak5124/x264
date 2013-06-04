@@ -969,6 +969,7 @@ static void help( x264_param_t *defaults, int longhelp )
     H1( "  -v, --verbose               Print stats for each frame\n" );
     H1( "      --no-progress           Don't show the progress indicator while encoding\n" );
     H0( "      --quiet                 Quiet Mode\n" );
+    H2( "      --show-param2           add most of the encoding options to log\n");
     H1( "      --log-level <string>    Specify the maximum level of logging [\"%s\"]\n"
         "                                  - %s\n", strtable_lookup( x264_log_level_names, cli_log_level - X264_LOG_NONE ),
                                        stringify_names( buf, x264_log_level_names ) );
@@ -1044,6 +1045,7 @@ typedef enum
     OPT_TCFILE_OUT,
     OPT_TIMEBASE,
     OPT_PULLDOWN,
+    OPT_SHOW_PARAM2,
     OPT_LOG_LEVEL,
     OPT_LOG_FILE,
     OPT_LOG_FILE_LEVEL,
@@ -1185,6 +1187,7 @@ static struct option long_options[] =
     { "ssim",              no_argument, NULL, 0 },
     { "quiet",             no_argument, NULL, OPT_QUIET },
     { "verbose",           no_argument, NULL, 'v' },
+    { "show-param2",       no_argument, NULL, OPT_SHOW_PARAM2 },
     { "log-level",   required_argument, NULL, OPT_LOG_LEVEL },
     { "log-file",          required_argument, NULL, OPT_LOG_FILE },
     { "log-file-level",    required_argument, NULL, OPT_LOG_FILE_LEVEL },
@@ -1553,6 +1556,9 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
                 break;
             case 'v':
                 cli_log_level = param->i_log_level = X264_LOG_DEBUG;
+                break;
+            case OPT_SHOW_PARAM2:
+                param->b_show_param2 = 1;
                 break;
             case OPT_LOG_LEVEL:
                 if( !parse_enum_value( optarg, x264_log_level_names, &cli_log_level ) )
