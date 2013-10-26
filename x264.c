@@ -928,6 +928,13 @@ static void help( x264_param_t *defaults, int longhelp )
         "                 <integer>    Specify timebase numerator for input timecode file\n"
         "                              or specify timebase denominator for other input\n" );
     H2( "      --dts-compress          Eliminate initial delay with container DTS hack\n" );
+#if HAVE_LSMASH
+    H2( "      --chapter <string>      Set the chapter list from chapter format file\n" );
+    H2( "      --chpl-with-bom         Add UTF-8 BOM to the chapter strings in the chapter list.\n" );
+    H2( "      --no-container-sar      Disable sample aspect ratio within the container\n" );
+    H2( "      --no-remux              Inhibit auto-remuxing for progressive download\n" );
+    H2( "      --fragments             Enable movie fragments structure\n" );
+#endif
     H0( "\n" );
     H0( "Filtering:\n" );
     H0( "\n" );
@@ -973,7 +980,12 @@ typedef enum
     OPT_DTS_COMPRESSION,
     OPT_OUTPUT_CSP,
     OPT_INPUT_RANGE,
-    OPT_RANGE
+    OPT_RANGE,
+    OPT_CHAPTER,
+    OPT_CHPL_WITH_BOM,
+    OPT_NO_CONTAINER_SAR,
+    OPT_NO_REMUX,
+    OPT_FRAGMENTS
 } OptionsOPT;
 
 static char short_options[] = "8A:B:b:f:hI:i:m:o:p:q:r:t:Vvw";
@@ -1142,6 +1154,11 @@ static struct option long_options[] =
     { "input-range", required_argument, NULL, OPT_INPUT_RANGE },
     { "stitchable",        no_argument, NULL, 0 },
     { "filler",            no_argument, NULL, 0 },
+    { "chapter",     required_argument, NULL, OPT_CHAPTER },
+    { "chpl-with-bom",     no_argument, NULL, OPT_CHPL_WITH_BOM },
+    { "no-container-sar",  no_argument, NULL, OPT_NO_CONTAINER_SAR },
+    { "no-remux",          no_argument, NULL, OPT_NO_REMUX },
+    { "fragments",         no_argument, NULL, OPT_FRAGMENTS },
     {0, 0, 0, 0}
 };
 
@@ -1466,6 +1483,9 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
                 break;
             case OPT_NOPROGRESS:
                 opt->b_progress = 0;
+#if HAVE_LSMASH
+                output_opt.no_progress = 1;
+#endif
                 break;
             case OPT_TUNE:
             case OPT_PRESET:
@@ -1535,6 +1555,23 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
                 FAIL_IF_ERROR( parse_enum_value( optarg, range_names, &param->vui.b_fullrange ), "Unknown range `%s'\n", optarg );
                 input_opt.output_range = param->vui.b_fullrange += RANGE_AUTO;
                 break;
+#if HAVE_LSMASH
+            case OPT_CHAPTER:
+                output_opt.chapter = optarg;
+                break;
+            case OPT_CHPL_WITH_BOM:
+                output_opt.add_bom = 1;
+                break;
+            case OPT_NO_CONTAINER_SAR:
+                output_opt.no_sar = 1;
+                break;
+            case OPT_NO_REMUX:
+                output_opt.no_remux = 1;
+                break;
+            case OPT_FRAGMENTS:
+                output_opt.fragments = 1;
+                break;
+#endif
             default:
 generic_option:
             {
