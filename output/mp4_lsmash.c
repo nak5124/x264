@@ -27,6 +27,7 @@
  * For more information, contact us at licensing@x264.com.
  *****************************************************************************/
 
+#include "common/common.h"
 #include "output.h"
 #include <lsmash.h>
 
@@ -34,10 +35,10 @@
 
 /*******************/
 
-#define MP4_LOG_ERROR( ... )                x264_cli_log( "mp4", X264_LOG_ERROR, __VA_ARGS__ )
-#define MP4_LOG_WARNING( ... )              x264_cli_log( "mp4", X264_LOG_WARNING, __VA_ARGS__ )
-#define MP4_LOG_INFO( ... )                 x264_cli_log( "mp4", X264_LOG_INFO, __VA_ARGS__ )
-#define MP4_FAIL_IF_ERR( cond, ... )        FAIL_IF_ERR( cond, "mp4", __VA_ARGS__ )
+#define MP4_LOG_ERROR( ... )         x264_cli_log( "mp4", X264_LOG_ERROR, __VA_ARGS__ )
+#define MP4_LOG_WARNING( ... )       x264_cli_log( "mp4", X264_LOG_WARNING, __VA_ARGS__ )
+#define MP4_LOG_INFO( ... )          x264_cli_log( "mp4", X264_LOG_INFO, __VA_ARGS__ )
+#define MP4_FAIL_IF_ERR( cond, ... ) FAIL_IF_ERR( cond, "mp4", __VA_ARGS__ )
 
 /* For close_file() */
 #define MP4_LOG_IF_ERR( cond, ... )\
@@ -59,30 +60,66 @@ if( cond )\
 
 typedef struct
 {
-    lsmash_root_t *p_root;
+    lsmash_root_t          *p_root;
     lsmash_video_summary_t *summary;
-    int b_stdout;
-    uint32_t i_movie_timescale;
-    uint32_t i_video_timescale;
-    uint32_t i_track;
-    uint32_t i_sample_entry;
-    uint64_t i_time_inc;
-    int64_t i_start_offset;
-    uint64_t i_first_cts;
-    uint64_t i_prev_dts;
-    uint32_t i_sei_size;
-    uint8_t *p_sei_buffer;
-    int i_numframe;
-    int64_t i_init_delta;
-    int i_delay_frames;
-    int b_dts_compress;
-    int i_dts_compress_multiplier;
-    int b_use_recovery;
-    int b_fragments;
+    int                     b_stdout;
+    uint32_t                i_movie_timescale;
+    uint32_t                i_video_timescale;
+    uint32_t                i_track;
+    uint32_t                i_sample_entry;
+    uint64_t                i_time_inc;
+    int64_t                 i_start_offset;
+    uint64_t                i_first_cts;
+    uint64_t                i_prev_dts;
+    uint32_t                i_sei_size;
+    uint8_t                *p_sei_buffer;
+    int                     i_numframe;
+    int64_t                 i_init_delta;
+    int                     i_delay_frames;
+    int                     b_dts_compress;
+    int                     i_dts_compress_multiplier;
+    int                     b_use_recovery;
+    int                     i_recovery_frame_cnt;
+    int                     i_max_frame_num;
+    uint64_t                i_last_intra_cts;
+    char                   *psz_chapter;
+    int                     b_add_bom;
+    int                     b_no_pasp;
+    int                     b_no_remux;
+    int                     b_fragments;
+    int                     b_no_progress;
     lsmash_file_parameters_t file_param;
 } mp4_hnd_t;
 
 /*******************/
+
+static void set_recovery_param( mp4_hnd_t *p_mp4, x264_param_t *p_param )
+{
+    p_mp4->b_use_recovery = p_param->b_open_gop || p_param->b_intra_refresh;
+    if( !p_mp4->b_use_recovery )
+        return;
+
+    /* almost copied from x264_sps_init in encoder/set.c */
+    int i_num_reorder_frames = p_param->i_bframe_pyramid ? 2 : p_param->i_bframe ? 1 : 0;
+    int i_num_ref_frames     = X264_MIN( X264_REF_MAX, X264_MAX4( p_param->i_frame_reference, 1 + i_num_reorder_frames,
+                                                                  p_param->i_bframe_pyramid ? 4 : 1, p_param->i_dpb_size ) );
+    i_num_ref_frames -= p_param->i_bframe_pyramid == X264_B_PYRAMID_STRICT;
+    if( p_param->i_keyint_max == 1 )
+        i_num_ref_frames = 0;
+
+    p_mp4->i_max_frame_num = i_num_ref_frames * ( !!p_param->i_bframe_pyramid + 1 ) + 1;
+    if( p_param->b_intra_refresh )
+    {
+        p_mp4->i_recovery_frame_cnt = X264_MIN( ( p_param->i_width + 15 ) / 16 - 1, p_param->i_keyint_max ) + p_param->i_bframe - 1;
+        p_mp4->i_max_frame_num      = X264_MAX( p_mp4->i_max_frame_num, p_mp4->i_recovery_frame_cnt + 1 );
+    }
+
+    int i_log2_max_frame_num = 4;
+    while( ( 1 << i_log2_max_frame_num ) <= p_mp4->i_max_frame_num )
+        i_log2_max_frame_num++;
+
+    p_mp4->i_max_frame_num = 1 << i_log2_max_frame_num;
+}
 
 static void remove_mp4_hnd( hnd_t handle )
 {
@@ -94,6 +131,35 @@ static void remove_mp4_hnd( hnd_t handle )
     lsmash_destroy_root( p_mp4->p_root );
     free( p_mp4->p_sei_buffer );
     free( p_mp4 );
+}
+
+typedef struct
+{
+    int64_t start;
+    int     no_progress;
+} remux_cb_param;
+
+int remux_callback( void *param, uint64_t done, uint64_t total )
+{
+    remux_cb_param *cb_param = (remux_cb_param *)param;
+    if( cb_param->no_progress && done != total )
+        return 0;
+    int64_t elapsed  = x264_mdate() - cb_param->start;
+    double  byterate = done / ( elapsed / 1000000. );
+    fprintf( stderr, "remux [%5.2lf%%], %"PRIu64"/%"PRIu64" KiB, %u KiB/s, ",
+             done*100./total, done/1024, total/1024, (unsigned)byterate/1024 );
+    if( done == total )
+    {
+        unsigned sec = (unsigned)( elapsed / 1000000 );
+        fprintf( stderr, "total elapsed %u:%02u:%02u\n\n", sec/3600, (sec/60)%60, sec%60 );
+    }
+    else
+    {
+        unsigned eta = (unsigned)( (total - done) / byterate );
+        fprintf( stderr, "eta %u:%02u:%02u\r", eta/3600, (eta/60)%60, eta%60 );
+    }
+    fflush( stderr ); /* needed in Windows */
+    return 0;
 }
 
 /*******************/
@@ -142,11 +208,28 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
                                 "failed to set timeline map for video.\n" );
             }
             else if( !p_mp4->b_stdout )
+            {
                 MP4_LOG_IF_ERR( lsmash_modify_explicit_timeline_map( p_mp4->p_root, p_mp4->i_track, 1, edit ),
                                 "failed to update timeline map for video.\n" );
+            }
         }
 
-        MP4_LOG_IF_ERR( lsmash_finish_movie( p_mp4->p_root, NULL ), "failed to finish movie.\n" );
+        if( p_mp4->psz_chapter )
+            MP4_LOG_IF_ERR( lsmash_set_tyrant_chapter( p_mp4->p_root, p_mp4->psz_chapter, p_mp4->b_add_bom ), "failed to set chapter list.\n" );
+
+        if( !p_mp4->b_no_remux )
+        {
+            remux_cb_param           cb_param;
+            cb_param.no_progress   = p_mp4->b_no_progress;
+            cb_param.start         = x264_mdate();
+            lsmash_adhoc_remux_t     remux_info;
+            remux_info.func        = remux_callback;
+            remux_info.buffer_size = 4 * 1024 * 1024; /* 4MiB */
+            remux_info.param       = &cb_param;
+            MP4_LOG_IF_ERR( lsmash_finish_movie( p_mp4->p_root, &remux_info ), "failed to finish movie.\n" );
+        }
+        else
+            MP4_LOG_IF_ERR( lsmash_finish_movie( p_mp4->p_root, NULL ), "failed to finish movie.\n" );
     }
 
     remove_mp4_hnd( p_mp4 ); /* including lsmash_destroy_root( p_mp4->p_root ); */
@@ -157,12 +240,13 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
 static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt )
 {
     *p_handle = NULL;
+    FILE *fh;
 
     int b_regular = strcmp( psz_filename, "-" );
     b_regular = b_regular && x264_is_regular_file_path( psz_filename );
     if( b_regular )
     {
-        FILE *fh = x264_fopen( psz_filename, "wb" );
+        fh = x264_fopen( psz_filename, "wb" );
         MP4_FAIL_IF_ERR( !fh, "cannot open output file `%s'.\n", psz_filename );
         b_regular = x264_is_regular_file( fh );
         fclose( fh );
@@ -172,9 +256,19 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
     MP4_FAIL_IF_ERR( !p_mp4, "failed to allocate memory for muxer information.\n" );
 
     p_mp4->b_dts_compress = opt->use_dts_compress;
-    p_mp4->b_use_recovery = 0; // we don't really support recovery
-    p_mp4->b_fragments    = !b_regular;
-    p_mp4->b_stdout       = !strcmp( psz_filename, "-" );
+
+    if( opt->chapter )
+    {
+        p_mp4->psz_chapter = opt->chapter;
+        p_mp4->b_add_bom   = opt->add_bom;
+        fh = x264_fopen( p_mp4->psz_chapter, "rb" );
+        MP4_FAIL_IF_ERR_EX( !fh, "can't open `%s'\n", p_mp4->psz_chapter );
+        fclose( fh );
+    }
+    p_mp4->b_no_pasp   = opt->no_sar;
+    p_mp4->b_no_remux  = opt->no_remux;
+    p_mp4->b_fragments = !b_regular || opt->fragments;
+    p_mp4->b_stdout    = !strcmp( psz_filename, "-" );
 
     p_mp4->p_root = lsmash_create_root();
     MP4_FAIL_IF_ERR_EX( !p_mp4->p_root, "failed to create root.\n" );
@@ -188,6 +282,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
                         "failed to allocate memory for summary information of video.\n" );
     p_mp4->summary->sample_type = ISOM_CODEC_TYPE_AVC1_VIDEO;
 
+    p_mp4->b_no_progress = opt->no_progress;
+
     *p_handle = p_mp4;
 
     return 0;
@@ -197,6 +293,8 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
 {
     mp4_hnd_t *p_mp4 = handle;
     uint64_t i_media_timescale;
+
+    set_recovery_param( p_mp4, p_param );
 
     p_mp4->i_delay_frames = p_param->i_bframe ? (p_param->i_bframe_pyramid ? 2 : 1) : 0;
     p_mp4->i_dts_compress_multiplier = p_mp4->b_dts_compress * p_mp4->i_delay_frames + 1;
@@ -238,9 +336,9 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     p_mp4->i_track = lsmash_create_track( p_mp4->p_root, ISOM_MEDIA_HANDLER_TYPE_VIDEO_TRACK );
     MP4_FAIL_IF_ERR( !p_mp4->i_track, "failed to create a video track.\n" );
 
-    p_mp4->summary->width = p_param->i_width;
+    p_mp4->summary->width  = p_param->i_width;
     p_mp4->summary->height = p_param->i_height;
-    uint32_t i_display_width = p_param->i_width << 16;
+    uint32_t i_display_width  = p_param->i_width  << 16;
     uint32_t i_display_height = p_param->i_height << 16;
     if( p_param->vui.i_sar_width && p_param->vui.i_sar_height )
     {
@@ -249,8 +347,11 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
             i_display_width *= sar;
         else
             i_display_height /= sar;
-        p_mp4->summary->par_h = p_param->vui.i_sar_width;
-        p_mp4->summary->par_v = p_param->vui.i_sar_height;
+        if( !p_mp4->b_no_pasp )
+        {
+            p_mp4->summary->par_h = p_param->vui.i_sar_width;
+            p_mp4->summary->par_v = p_param->vui.i_sar_height;
+        }
     }
     p_mp4->summary->color.primaries_index = p_param->vui.i_colorprim;
     p_mp4->summary->color.transfer_index  = p_param->vui.i_transfer;
@@ -261,8 +362,8 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     lsmash_track_parameters_t track_param;
     lsmash_initialize_track_parameters( &track_param );
     lsmash_track_mode track_mode = ISOM_TRACK_ENABLED | ISOM_TRACK_IN_MOVIE | ISOM_TRACK_IN_PREVIEW;
-    track_param.mode = track_mode;
-    track_param.display_width = i_display_width;
+    track_param.mode           = track_mode;
+    track_param.display_width  = i_display_width;
     track_param.display_height = i_display_height;
     MP4_FAIL_IF_ERR( lsmash_set_track_parameters( p_mp4->p_root, p_mp4->i_track, &track_param ),
                      "failed to set track parameters for video.\n" );
@@ -272,11 +373,9 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     lsmash_initialize_media_parameters( &media_param );
     media_param.timescale = i_media_timescale;
     media_param.media_handler_name = "L-SMASH Video Media Handler";
-    if( p_mp4->b_use_recovery )
-    {
-        media_param.roll_grouping = p_param->b_intra_refresh;
-        media_param.rap_grouping = p_param->b_open_gop;
-    }
+    media_param.roll_grouping = p_param->b_intra_refresh;
+    media_param.rap_grouping  = p_param->b_open_gop;
+
     MP4_FAIL_IF_ERR( lsmash_set_media_parameters( p_mp4->p_root, p_mp4->i_track, &media_param ),
                      "failed to set media parameters for video.\n" );
     p_mp4->i_video_timescale = lsmash_get_media_timescale( p_mp4->p_root, p_mp4->i_track );
@@ -356,11 +455,11 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
     if( !p_mp4->i_numframe )
     {
         p_mp4->i_start_offset = p_picture->i_dts * -1;
-        p_mp4->i_first_cts = p_mp4->b_dts_compress ? 0 : p_mp4->i_start_offset * p_mp4->i_time_inc;
+        p_mp4->i_first_cts    = p_mp4->b_dts_compress ? 0 : p_mp4->i_start_offset * p_mp4->i_time_inc;
         if( p_mp4->b_fragments )
         {
             lsmash_edit_t edit;
-            edit.duration   = ISOM_EDIT_DURATION_UNKNOWN32;     /* QuickTime doesn't support 64bit duration. */
+            edit.duration   = ISOM_EDIT_DURATION_UNKNOWN32;    /* QuickTime doesn't support 64bit duration. */
             edit.start_time = p_mp4->i_first_cts;
             edit.rate       = ISOM_EDIT_MODE_NORMAL;
             MP4_LOG_IF_ERR( lsmash_create_explicit_timeline_map( p_mp4->p_root, p_mp4->i_track, edit ),
@@ -400,7 +499,36 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
     p_sample->dts = dts;
     p_sample->cts = cts;
     p_sample->index = p_mp4->i_sample_entry;
-    p_sample->prop.ra_flags = p_picture->b_keyframe ? ISOM_SAMPLE_RANDOM_ACCESS_FLAG_SYNC : ISOM_SAMPLE_RANDOM_ACCESS_FLAG_NONE;
+    p_sample->prop.ra_flags = p_picture->i_type == X264_TYPE_IDR ? ISOM_SAMPLE_RANDOM_ACCESS_FLAG_SYNC : ISOM_SAMPLE_RANDOM_ACCESS_FLAG_NONE;
+    if( p_mp4->b_use_recovery )
+    {
+        p_sample->prop.independent = IS_X264_TYPE_I( p_picture->i_type ) ? ISOM_SAMPLE_IS_INDEPENDENT : ISOM_SAMPLE_IS_NOT_INDEPENDENT;
+        p_sample->prop.disposable  = p_picture->i_type == X264_TYPE_B ? ISOM_SAMPLE_IS_DISPOSABLE : ISOM_SAMPLE_IS_NOT_DISPOSABLE;
+        p_sample->prop.redundant   = ISOM_SAMPLE_HAS_NO_REDUNDANCY;
+
+        p_sample->prop.leading = !IS_X264_TYPE_B( p_picture->i_type ) || p_sample->cts >= p_mp4->i_last_intra_cts
+                               ? ISOM_SAMPLE_IS_NOT_LEADING : ISOM_SAMPLE_IS_UNDECODABLE_LEADING;
+        if( p_sample->prop.independent == ISOM_SAMPLE_IS_INDEPENDENT )
+            p_mp4->i_last_intra_cts = p_sample->cts;
+        p_sample->prop.post_roll.identifier = p_picture->i_frame_num % p_mp4->i_max_frame_num;
+        if( p_picture->b_keyframe && p_picture->i_type != X264_TYPE_IDR )
+        {
+            /* A picture with Recovery Point SEI */
+            p_sample->prop.ra_flags = ISOM_SAMPLE_RANDOM_ACCESS_FLAG_POST_ROLL_START;
+            p_sample->prop.post_roll.complete = (p_sample->prop.post_roll.identifier + p_mp4->i_recovery_frame_cnt) % p_mp4->i_max_frame_num;
+        }
+        if( p_picture->i_type == X264_TYPE_I && p_picture->b_keyframe && p_mp4->i_recovery_frame_cnt == 0 )
+            p_sample->prop.ra_flags = ISOM_SAMPLE_RANDOM_ACCESS_FLAG_OPEN_RAP;
+    }
+
+    x264_cli_log( "mp4", X264_LOG_DEBUG, "coded: %d, frame_num: %d, key: %s, type: %s, independ: %s, dispose: %s, lead: %s\n",
+                  p_mp4->i_numframe, p_picture->i_frame_num, p_picture->b_keyframe ? "yes" : "no",
+                  p_picture->i_type == X264_TYPE_P    ? "P" : p_picture->i_type == X264_TYPE_B        ? "b" :
+                  p_picture->i_type == X264_TYPE_BREF ? "B" : p_picture->i_type == X264_TYPE_IDR      ? "I" :
+                  p_picture->i_type == X264_TYPE_I    ? "i" : p_picture->i_type == X264_TYPE_KEYFRAME ? "K" : "N",
+                  p_sample->prop.independent == ISOM_SAMPLE_IS_INDEPENDENT         ? "yes" : "no",
+                  p_sample->prop.disposable  == ISOM_SAMPLE_IS_DISPOSABLE          ? "yes" : "no",
+                  p_sample->prop.leading     == ISOM_SAMPLE_IS_UNDECODABLE_LEADING ? "yes" : "no" );
 
     if( p_mp4->b_fragments && p_mp4->i_numframe && p_sample->prop.ra_flags != ISOM_SAMPLE_RANDOM_ACCESS_FLAG_NONE )
     {

@@ -31,7 +31,13 @@
 
 typedef struct
 {
-    int use_dts_compress;
+    int   use_dts_compress;
+    char *chapter;
+    int   add_bom;
+    int   no_sar;
+    int   no_remux;
+    int   fragments;
+    int   no_progress;
 } cli_output_opt_t;
 
 typedef struct
