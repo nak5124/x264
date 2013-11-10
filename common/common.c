@@ -727,13 +727,15 @@ int x264_param_parse( x264_param_t *p, const char *name, const char *value )
     {
         if( strstr( value, "infinite" ) )
             p->i_keyint_max = X264_KEYINT_MAX_INFINITE;
+        else if( !strcmp( value, "auto" ) || atoi(value) < 0 )
+            p->i_keyint_max = X264_KEYINT_MAX_AUTO;
         else
             p->i_keyint_max = atoi(value);
     }
     OPT2("min-keyint", "keyint-min")
     {
         p->i_keyint_min = atoi(value);
-        if( p->i_keyint_max < p->i_keyint_min )
+        if( p->i_keyint_max != X264_KEYINT_MAX_AUTO && p->i_keyint_max < p->i_keyint_min )
             p->i_keyint_max = p->i_keyint_min;
     }
     OPT("scenecut")
