@@ -202,6 +202,7 @@ typedef struct x264_nal_t
 #define X264_B_PYRAMID_NORMAL        2
 #define X264_KEYINT_MIN_AUTO         0
 #define X264_KEYINT_MAX_INFINITE     (1<<30)
+#define X264_KEYINT_MAX_AUTO         (-1)
 
 static const char * const x264_direct_pred_names[] = { "none", "spatial", "temporal", "auto", 0 };
 static const char * const x264_motion_est_names[] = { "dia", "hex", "umh", "esa", "tesa", 0 };
