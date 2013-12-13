@@ -130,13 +130,20 @@ static void avs_build_filter_sequence( char *filename_ext, const char *filter[AV
 #if USE_AVXSYNTH
     const char *all_purpose[] = { "FFVideoSource", 0 };
 #else
-    const char *all_purpose[] = { "FFmpegSource2", "DSS2", "DirectShowSource", 0 };
+    const char *all_purpose[] = { "LWLibavVideoSource", "FFmpegSource2", "DSS2", "DirectShowSource", 0 };
     if( !strcasecmp( filename_ext, "avi" ) )
         filter[i++] = "AVISource";
+    if( !strcasecmp( filename_ext, "mp4" ) || !strcasecmp( filename_ext, "mov" ) || !strcasecmp( filename_ext, "qt" ) ||
+        !strcasecmp( filename_ext, "3gp" ) || !strcasecmp( filename_ext, "3g2" ) )
+        filter[i++] = "LSMASHVideoSource";
     if( !strcasecmp( filename_ext, "d2v" ) )
         filter[i++] = "MPEG2Source";
     if( !strcasecmp( filename_ext, "dga" ) )
         filter[i++] = "AVCSource";
+    if( !strcasecmp( filename_ext, "dgi" ) )
+        filter[i++] = "DGSource";
+    if( !strcasecmp( filename_ext, "vpy" ) )
+        filter[i++] = "VSImport";
 #endif
     for( int j = 0; all_purpose[j] && i < AVS_MAX_SEQUENCE; j++ )
         filter[i++] = all_purpose[j];
