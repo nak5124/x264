@@ -1268,7 +1268,11 @@ if [ "$cli_libx264" = "system" ] ; then
         cc_check 'stdint.h x264.h' '' 'x264_encoder_open(0);' || die "System libx264 can't be used for compilation of this version"
     fi
 else
-    CLI_LIBX264='$(LIBX264)'
+    if [ "$shared" = "yes" -a "$static" = "no" ]; then
+        CLI_LIBX264='$(SONAME)'
+    else
+        CLI_LIBX264='$(LIBX264)'
+    fi
 fi
 
 DEPMM="${QPRE}MM"
