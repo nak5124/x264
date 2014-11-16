@@ -41,6 +41,11 @@ checkasm
 *.pyc
 *.pgd
 *.pgc
+*.gcda
+*.gcno
+*.dyn
+*.dpi
+*.lock
 
 .digress_x264
 dataDec.txt
