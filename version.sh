@@ -7,7 +7,7 @@ trap 'rm -f config.git-hash' EXIT
 git rev-list HEAD | sort > config.git-hash
 LOCALVER=`wc -l config.git-hash | awk '{print $1}'`
 BIT_DEPTH=`grep "X264_BIT_DEPTH" < ${BUILD_DIR}x264_config.h | awk '{print $3}'`
-BUILD_ARCH=`grep "ARCH=" < ${BUILD_DIR}config.mak | awk -F= '{print $2}'`
+BUILD_ARCH=`grep "SYS_ARCH=" < ${BUILD_DIR}config.mak | awk -F= '{print $2}'`
 BUILD_ARCH=`echo $BUILD_ARCH | tr "[A-Z]" "[a-z]"`
 LAVF=`grep "HAVE_LAVF" < ${BUILD_DIR}config.h | awk '{print $3}'`
 if [ $LOCALVER \> 1 ] ; then
