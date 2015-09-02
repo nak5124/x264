@@ -30,8 +30,14 @@
 
 #ifdef _WIN32
 /* The following two defines must be located before the inclusion of any system header files. */
-#define WINVER       0x0500
+#if !defined(WINVER) || WINVER < 0x0500
+#undef WINVER
+#define WINVER 0x0500
+#endif
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0500
+#undef _WIN32_WINNT
 #define _WIN32_WINNT 0x0500
+#endif
 #include <windows.h>
 #include <io.h>       /* _setmode() */
 #include <fcntl.h>    /* _O_BINARY */
